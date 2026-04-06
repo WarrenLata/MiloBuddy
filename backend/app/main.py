@@ -1,10 +1,11 @@
+import uvicorn
+import vertexai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import chat_router, transactions_router, goals_router, auth_router
-import vertexai
-import uvicorn
 
 from app.core.config import settings
+
+from .api import auth_router, chat_router, goals_router, transactions_router
 
 # Initialize vertexai with the configured project (kept static here but can be
 # moved to Settings if you want it configurable via .env)

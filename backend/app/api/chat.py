@@ -1,17 +1,14 @@
-
 from fastapi import APIRouter, HTTPException
-from app.models.chat import ChatRequest
 
 from app.agents.main_agent.agent_adapter import handle_message
+from app.models.chat import ChatRequest
 
-router = APIRouter(prefix="/chat", tags=["chat"]) 
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.get("/ping")
 async def ping():
     return {"status": "ok", "service": "chat"}
-
-
 
 
 @router.post("/")

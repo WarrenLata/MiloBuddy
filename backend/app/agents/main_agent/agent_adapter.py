@@ -1,9 +1,8 @@
-from .main_agent import MainAgentRunner
 import asyncio
 import logging
 from typing import Dict
 
-logger = logging.getLogger(__name__)
+from .main_agent import MainAgentRunner
 
 # Simple in-memory cache for MainAgentRunner instances keyed by user_id.
 # This preserves the session (conversation memory) for each user across
@@ -11,8 +10,12 @@ logger = logging.getLogger(__name__)
 _runners: Dict[str, MainAgentRunner] = {}
 _locks: Dict[str, asyncio.Lock] = {}
 
+logger = logging.getLogger(__name__)
 
-async def _get_or_create_runner(user_id: str, user_name: str | None = None) -> MainAgentRunner:
+
+async def _get_or_create_runner(
+    user_id: str, user_name: str | None = None
+) -> MainAgentRunner:
     """Return a cached MainAgentRunner for user_id or create one if missing.
 
     Creation is done inside a thread because MainAgentRunner.__init__ uses
@@ -38,11 +41,21 @@ async def _get_or_create_runner(user_id: str, user_name: str | None = None) -> M
         # Use the async factory to create the runner (avoids asyncio.run inside)
         runner = await MainAgentRunner.create(user_id=user_id, user_name=user_name)
         _runners[user_id] = runner
-        logger.info("Created MainAgentRunner for user_id=%s session_id=%s", user_id, getattr(runner, 'session', None).id if getattr(runner, 'session', None) else None)
+        logger.info(
+            "Created MainAgentRunner for user_id=%s session_id=%s",
+            user_id,
+            (
+                getattr(runner, "session_id", None)
+                if getattr(runner, "session_id", None)
+                else None
+            ),
+        )
         return runner
 
 
-async def handle_message(message: str, user_id: str = "user", user_name: str | None = None) -> str:
+async def handle_message(
+    message: str, user_id: str = "user", user_name: str | None = None
+) -> str:
     """Forward a user message to the per-user MainAgentRunner and return the reply.
 
     This preserves conversation memory by reusing the same runner (and its
@@ -53,7 +66,11 @@ async def handle_message(message: str, user_id: str = "user", user_name: str | N
         reply = await runner.call_agent_async(message, user_name=user_name)
         return reply
     except Exception as e:
-        logger.exception("Error while handling message with MainAgentRunner ! Message: %s, User ID: %s", message, user_id)
+        logger.exception(
+            "Error while handling message with MainAgentRunner ! Message: %s, User ID: %s",
+            message,
+            user_id,
+        )
         return f"Agent error: {e}"
 
 
