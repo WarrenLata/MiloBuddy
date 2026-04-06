@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: milo-backend
+Version: 0.1.0
+Summary: Milo backend - FastAPI services
+Author-email: Warren LATA <latawarren@gmail.com>
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.98.0
+Requires-Dist: uvicorn[standard]>=0.22.0
+Requires-Dist: pydantic>=2.5.1
+Requires-Dist: python-multipart>=0.0.5
+Requires-Dist: requests>=2.32.0
+Requires-Dist: google-adk>=1.28.1
+Requires-Dist: vertexai>=1.43.0

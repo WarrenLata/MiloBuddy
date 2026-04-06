@@ -1,0 +1,7 @@
+fastapi>=0.98.0
+uvicorn[standard]>=0.22.0
+pydantic>=2.5.1
+python-multipart>=0.0.5
+requests>=2.32.0
+google-adk>=1.28.1
+vertexai>=1.43.0
