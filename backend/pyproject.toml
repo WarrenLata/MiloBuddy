@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [ { name = "Warren LATA", email = "latawarren@gmail.com" } ]
 
+
+
 dependencies = [
   "fastapi>=0.98.0",
   "uvicorn[standard]>=0.22.0",
@@ -15,11 +17,17 @@ dependencies = [
   "google-adk>=1.28.1",
   "vertexai>=1.43.0",
   "pre-commit>=4.5.1",
+  "firebase-admin>=7.3.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+
 
 [tool.ruff]
 line-length = 88
