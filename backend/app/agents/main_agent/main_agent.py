@@ -65,9 +65,6 @@ class MainAgentRunner(Runner):
             app_name="MAIN_CHAT",
         )
 
-        # Prompt template already formatted in create if a user_name is provided
-        # self.prompt = PROMPT.format(user_name=user_name)
-
     @classmethod
     async def create(cls, user_id: str = "user", user_name: str | None = None):
         """Async factory that constructs the runner and creates a session.
