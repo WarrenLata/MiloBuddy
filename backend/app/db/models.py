@@ -10,15 +10,6 @@ class Base(DeclarativeBase):
     pass
 
 
-def gen_uuid_col(name: str = "id"):
-    return sa.Column(
-        name,
-        UUID(as_uuid=True),
-        primary_key=True,
-        server_default=text("gen_random_uuid()"),
-    )
-
-
 class User(Base):
     __tablename__ = "users"
 
@@ -42,6 +33,9 @@ class User(Base):
     )
 
     categories = relationship("Category", back_populates="owner")
+    __table_args__ = (
+        sa.CheckConstraint("plan IN ('free', 'plus')", name="ck_user_plan"),
+    )
 
 
 class Category(Base):
@@ -89,6 +83,15 @@ class Expense(Base):
     created_at = sa.Column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
     )
+    __table_args__ = (
+        sa.Index("idx_expenses_user_date", "user_id", sa.text("date DESC")),
+        sa.Index("idx_expenses_user_category", "user_id", "category_id"),
+        sa.CheckConstraint("amount_cents > 0", name="ck_expense_amount_positive"),
+        sa.CheckConstraint(
+            "input_method IN ('manual', 'voice', 'ocr', 'bank_sync')",
+            name="ck_expense_input_method",
+        ),
+    )
 
 
 class RecurringExpense(Base):
@@ -114,6 +117,15 @@ class RecurringExpense(Base):
     created_at = sa.Column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
     )
+    __table_args__ = (
+        sa.Index("idx_recurring_next_due", "user_id", "next_due_at"),
+        sa.CheckConstraint("amount_cents > 0", name="ck_recurring_amount_positive"),
+        sa.CheckConstraint(
+            "frequency IN ('monthly', 'weekly', 'annual')",
+            name="ck_recurring_frequency",
+        ),
+        sa.CheckConstraint("day_of_month BETWEEN 1 AND 31", name="ck_recurring_day"),
+    )
 
 
 class Budget(Base):
@@ -136,6 +148,18 @@ class Budget(Base):
     created_at = sa.Column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
     )
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "user_id",
+            "category_id",
+            "month",
+            "year",
+            name="uq_budget_user_category_month",
+        ),
+        sa.CheckConstraint("limit_amount_cents > 0", name="ck_budget_amount_positive"),
+        sa.CheckConstraint("month BETWEEN 1 AND 12", name="ck_budget_month"),
+        sa.CheckConstraint("year >= 2024", name="ck_budget_year"),
+    )
 
 
 class Goal(Base):
@@ -155,6 +179,9 @@ class Goal(Base):
     is_active = sa.Column(sa.Boolean, nullable=False, server_default=text("true"))
     created_at = sa.Column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
+    )
+    __table_args__ = (
+        sa.CheckConstraint("target_amount_cents > 0", name="ck_goal_amount_positive"),
     )
 
 
@@ -185,6 +212,12 @@ class GoalContribution(Base):
     created_at = sa.Column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
     )
+    __table_args__ = (
+        sa.CheckConstraint("amount_cents > 0", name="ck_contribution_amount_positive"),
+        sa.CheckConstraint(
+            "source IN ('manual', 'auto')", name="ck_contribution_source"
+        ),
+    )
 
 
 class Conversation(Base):
@@ -205,6 +238,17 @@ class Conversation(Base):
     created_at = sa.Column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
     )
+    __table_args__ = (
+        sa.Index(
+            "idx_conversations_user_session",
+            "user_id",
+            "session_id",
+            sa.text("created_at DESC"),
+        ),
+        sa.CheckConstraint(
+            "role IN ('user', 'assistant')", name="ck_conversation_role"
+        ),
+    )
 
 
 class NotificationLog(Base):
@@ -218,10 +262,20 @@ class NotificationLog(Base):
         nullable=False,
         index=True,
     )
-    type = sa.Column(sa.Text, nullable=False)
+    notification_type = sa.Column(
+        "type",
+        sa.Text,
+        nullable=False,
+    )
     title = sa.Column(sa.Text, nullable=False)
     message = sa.Column(sa.Text, nullable=False)
     opened = sa.Column(sa.Boolean, nullable=False, server_default=text("false"))
     sent_at = sa.Column(
         sa.TIMESTAMP(timezone=True), nullable=False, server_default=text("now()")
+    )
+    __table_args__ = (
+        sa.CheckConstraint(
+            "type IN ('checkin', 'alert', 'budget_warning', 'goal_milestone', 'monthly_recap')",
+            name="ck_notification_type",
+        ),
     )

@@ -1,3 +1,4 @@
+import logging
 import os
 
 from fastapi import Depends, HTTPException, Security
@@ -10,6 +11,57 @@ from app.db.models import User
 
 security = HTTPBearer()
 
+# Module-level flag set by init_firebase()
+_firebase_initialized = False
+
+
+def init_firebase() -> None:
+    """Initialize the firebase_admin SDK at application startup.
+
+    Tries application default credentials (ADC) first, then falls back to a
+    service account JSON path provided via FIREBASE_SERVICE_ACCOUNT.
+
+    This function logs warnings instead of raising so the app can still start
+    even if Firebase verification isn't configured; requests that require
+    token verification will receive a 500 response explaining the missing
+    configuration.
+    """
+    global _firebase_initialized
+    try:
+        import firebase_admin
+        from firebase_admin import credentials as firebase_credentials
+
+        if firebase_admin._apps:
+            logging.info("Firebase Admin already initialized")
+            _firebase_initialized = True
+            return
+
+        try:
+            firebase_admin.initialize_app()
+            _firebase_initialized = True
+            logging.info(
+                "Initialized Firebase Admin using application default credentials"
+            )
+            return
+        except Exception:
+            cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+            if cred_path and os.path.exists(cred_path):
+                cred = firebase_credentials.Certificate(cred_path)
+                firebase_admin.initialize_app(cred)
+                _firebase_initialized = True
+                logging.info(
+                    "Initialized Firebase Admin using FIREBASE_SERVICE_ACCOUNT file"
+                )
+                return
+
+        logging.warning(
+            "Firebase Admin SDK not initialized: set FIREBASE_SERVICE_ACCOUNT or configure ADC"
+        )
+    except Exception:
+        logging.warning(
+            "firebase_admin package not installed. Install with `pip install firebase-admin` to enable token verification"
+        )
+
 
 async def verify_firebase_token(
     creds: HTTPAuthorizationCredentials = Security(security),
@@ -17,14 +69,9 @@ async def verify_firebase_token(
 ) -> str:
     """Verify the Firebase ID token and return the internal user id (UUID as str).
 
-    Behavior:
-    - Requires the `firebase_admin` package and properly configured credentials.
-    - Verifies the ID token server-side and extracts `uid`, `email`, and `name` if present.
-    - Looks up a `User` by `firebase_uid`; if missing, creates a new `User` row.
-    - Returns `str(user.id)` which should be used as the canonical `user_id` for requests.
-
-    Raises HTTPException with appropriate status codes when verification fails or the
-    Firebase admin SDK is not configured.
+    This function expects `init_firebase()` to have been called during
+    application startup. If firebase is not initialized a 500 error is raised
+    explaining the missing configuration.
     """
     token = creds.credentials
     if not token:
@@ -33,35 +80,23 @@ async def verify_firebase_token(
     try:
         import firebase_admin
         from firebase_admin import auth as firebase_auth
-        from firebase_admin import credentials as firebase_credentials
     except Exception:
         raise HTTPException(
             status_code=501,
             detail=(
                 "firebase_admin not installed. Install via `pip install firebase-admin` "
-                "and configure a service account (set FIREBASE_SERVICE_ACCOUNT env var)"
+                "to enable server-side token verification."
             ),
         )
 
-    # Initialize firebase admin app if not already done. Prefer ADC but support
-    # a service account JSON path via FIREBASE_SERVICE_ACCOUNT env var.
-    if not firebase_admin._apps:
-        try:
-            # Try to initialize with default credentials (ADC) first
-            firebase_admin.initialize_app()
-        except Exception:
-            cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT")
-            if cred_path and os.path.exists(cred_path):
-                cred = firebase_credentials.Certificate(cred_path)
-                firebase_admin.initialize_app(cred)
-            else:
-                raise HTTPException(
-                    status_code=500,
-                    detail=(
-                        "Firebase Admin SDK not initialized. Set FIREBASE_SERVICE_ACCOUNT to a service account JSON "
-                        "or configure application default credentials."
-                    ),
-                )
+    if not _firebase_initialized or not firebase_admin._apps:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Firebase Admin SDK not initialized. Configure ADC or set FIREBASE_SERVICE_ACCOUNT "
+                "and call init_firebase() at application startup."
+            ),
+        )
 
     try:
         decoded = firebase_auth.verify_id_token(token)

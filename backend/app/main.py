@@ -1,8 +1,11 @@
+from contextlib import asynccontextmanager
+
 import uvicorn
 import vertexai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.auth import init_firebase
 from app.core.config import settings
 
 from .api import auth_router, chat_router, goals_router, transactions_router
@@ -12,7 +15,14 @@ from .api import auth_router, chat_router, goals_router, transactions_router
 vertexai.init(project=settings.gcloud_project_id)
 
 
-app = FastAPI(title="Milo Backend")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_firebase()
+    yield
+
+
+app = FastAPI(title="Milo Backend", lifespan=lifespan)
+
 
 app.add_middleware(
     CORSMiddleware,

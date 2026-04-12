@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     port: int = 8000
     # Whether to enable uvicorn reload (useful in development)
     reload: bool = True
+    google_api_key: str = ""
 
     # Pydantic v2: load environment variables from a .env file by default
     model_config = {

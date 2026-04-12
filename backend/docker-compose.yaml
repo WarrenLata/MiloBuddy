@@ -1,0 +1,52 @@
+
+services:
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: milo_v1
+      POSTGRES_USER: milo_app
+      POSTGRES_PASSWORD: localpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U milo_app -d milo_v1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql+pg8000://milo_app:localpassword@db:5432/milo_v1
+      ENVIRONMENT: development
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      FIREBASE_CREDENTIALS: ${FIREBASE_CREDENTIALS}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+  # or for Vertex
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      GOOGLE_CLOUD_LOCATION: europe-west1
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - backend_venv:/app/.venv
+      - ./secrets/firebase.json:/app/secrets/firebase.json:ro
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+
+
+  adminer:
+    image: adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+
+volumes:
+  backend_venv:
+  postgres_data:

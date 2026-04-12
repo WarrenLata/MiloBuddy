@@ -1,3 +1,4 @@
+import asyncio
 from logging.config import fileConfig
 
 from alembic import context
@@ -13,20 +14,36 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 
-def run_migrations_online():
-    # Create async engine via our helper so it uses Cloud SQL connector
+async def _run_migrations_async():
+    """Run migrations using an async engine created by the project's helper.
+
+    This uses SQLAlchemy AsyncEngine.connect() and connection.run_sync to
+    execute the synchronous Alembic migration operations on the connection.
+    """
     engine, _ = create_async_engine_and_session()
+    if engine is None:
+        raise RuntimeError(
+            "No async engine available; check DATABASE_URL or CLOUD_SQL_INSTANCE"
+        )
 
-    connectable = engine
+    async with engine.connect() as conn:  # type: ignore
+        # run_sync will run the provided callable in a sync context
+        await conn.run_sync(_do_run_migrations)
 
-    with connectable.connect() as connection:  # type: ignore
-        context.configure(connection=connection, target_metadata=Base.metadata)
 
-        with context.begin_transaction():
-            context.run_migrations()
+def _do_run_migrations(connection):
+    """Synchronous function run inside a connection by run_sync.
+
+    This configures the alembic context and runs migrations synchronously
+    using the connection provided by the async engine's run_sync wrapper.
+    """
+    context.configure(connection=connection, target_metadata=Base.metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
 
 
 if context.is_offline_mode():
     raise RuntimeError("offline mode not supported; run alembic with DB available")
 else:
-    run_migrations_online()
+    asyncio.run(_run_migrations_async())
