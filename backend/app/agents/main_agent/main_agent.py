@@ -7,9 +7,11 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.engine import async_session
+from app.db.models import Conversation
 
 from .build_context import build_main_agent_context, onboarding_context
 from .prompt import PROMPT
@@ -19,6 +21,32 @@ logging.basicConfig(level=logging.INFO)
 
 
 logger = logging.getLogger(__name__)
+
+
+async def save_user_message(user_id: str, session_id, query: str, db: AsyncSession):
+    db.add(
+        Conversation(
+            user_id=user_id,
+            session_id=session_id,
+            role="user",
+            content=query,
+        )
+    )
+    await db.commit()
+
+
+async def save_assistant_message(
+    user_id: str, session_id: str, query: str, db: AsyncSession
+):
+    db.add(
+        Conversation(
+            user_id=user_id,
+            session_id=session_id,
+            role="assistant",
+            content=query,
+        )
+    )
+    await db.commit()
 
 
 def create_agent(
@@ -142,7 +170,17 @@ class MainAgentRunner(Runner):
         self, query: str, user_name: str | None = None
     ) -> AsyncIterator[str]:
         content = types.Content(role="user", parts=[types.Part(text=query)])
+        if async_session is None:
+            raise RuntimeError("DB session not configured")
 
+        async with async_session() as db:
+            await save_user_message(
+                user_id=self.user,
+                session_id=self.session_id,
+                query=query,
+                db=db,
+            )
+        chunks = []
         seen_text = ""
         try:
             async for event in self.runner.run_async(
@@ -170,9 +208,19 @@ class MainAgentRunner(Runner):
                     seen_text += text
 
                 if delta:
+                    chunks.append(delta)
                     yield delta
 
                 if is_final_response:
+                    full_response = "".join(chunks).strip()
+                    if full_response and async_session is not None:
+                        async with async_session() as db:
+                            await save_assistant_message(
+                                user_id=self.user,
+                                session_id=self.session_id,
+                                query=full_response,
+                                db=db,
+                            )
                     break
         except Exception as e:
             logger.error(f"Stream error for session {self.session_id}: {e}")
