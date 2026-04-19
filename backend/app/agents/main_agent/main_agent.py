@@ -1,5 +1,6 @@
 import logging
 import uuid
+from collections.abc import AsyncIterator
 
 from dotenv import load_dotenv
 from google.adk.agents.llm_agent import Agent
@@ -7,6 +8,10 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from app.core.config import settings
+from app.db.engine import async_session
+
+from .build_context import build_main_agent_context, onboarding_context
 from .prompt import PROMPT
 
 load_dotenv()
@@ -18,17 +23,50 @@ logger = logging.getLogger(__name__)
 
 def create_agent(
     user_name: str | None = None,
+    build_context: str = "",
     description: str = "Main chat agent. Discuss with the user and decides which tools to use to answer the user's questions.",
 ) -> Agent:
-    prompt = PROMPT.format(user_name=user_name or "utilisateur")
+    prompt = PROMPT.format(
+        user_name=user_name or "utilisateur",
+        build_context=build_context,
+    )
 
     return Agent(
-        model="gemini-3-flash-preview",
+        model=settings.adk_model,
         name="root_agent",
         description=description,
         instruction=prompt,
         tools=[],
+        generate_content_config=types.GenerateContentConfig(
+            temperature=0.7,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
     )
+
+
+def _extract_text_from_event(event: object) -> str | None:
+    content = getattr(event, "content", None)
+    parts = getattr(content, "parts", None) if content is not None else None
+    if parts:
+        texts: list[str] = []
+        for part in parts:
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                texts.append(text)
+        if texts:
+            return "".join(texts)
+
+    delta = getattr(event, "delta", None)
+    if delta is not None:
+        text = getattr(delta, "text", None)
+        if isinstance(text, str) and text:
+            return text
+
+    text = getattr(event, "text", None)
+    if isinstance(text, str) and text:
+        return text
+
+    return None
 
 
 class MainAgentRunner(Runner):
@@ -43,9 +81,10 @@ class MainAgentRunner(Runner):
         self,
         user_id: str = "user",
         user_name: str | None = None,
+        build_context: str = "",
     ):
         # Build the per-user agent instruction but don't perform async work here
-        self.agent = create_agent(user_name)
+        self.agent = create_agent(user_name, build_context=build_context)
         # Initialize base Runner with an in-memory session service
         super().__init__(
             agent=self.agent,
@@ -73,7 +112,23 @@ class MainAgentRunner(Runner):
         use from an existing event loop.
         """
         session_id = f"main_chat_{user_id}_{uuid.uuid4()}"
-        instance = cls(user_id=user_id, user_name=user_name)
+        build_context = onboarding_context()
+        if async_session is not None:
+            try:
+                async with async_session() as db:
+                    build_context = await build_main_agent_context(user_id, db=db)
+            except Exception:
+                logger.exception(
+                    "Failed to build main agent context; falling back to onboarding context. user_id=%s",
+                    user_id,
+                )
+                build_context = onboarding_context()
+
+        instance = cls(
+            user_id=user_id,
+            user_name=user_name,
+            build_context=build_context,
+        )
 
         # create_session is async so await it here
         instance.session = await instance.session_service.create_session(
@@ -83,37 +138,60 @@ class MainAgentRunner(Runner):
         logger.info(f"Initialized MainAgentRunner with session_id: {session_id}")
         return instance
 
-    async def call_agent_async(self, query, user_name: str | None = None):
-        # Build the text we send to the agent. Use the runner's `self.prompt`
-        # (already formatted with the user_name in __init__) as a leading
-        # instruction when present, then append the user-facing message. This
-        # ensures the root agent receives the per-user prompt (including
-        # greetings) even though the global `root_agent` instruction is static.
-
+    async def stream_agent_text(
+        self, query: str, user_name: str | None = None
+    ) -> AsyncIterator[str]:
         content = types.Content(role="user", parts=[types.Part(text=query)])
 
-        final_response_text = "No final text response captured."
+        seen_text = ""
         try:
-
             async for event in self.runner.run_async(
                 user_id=self.user, session_id=self.session_id, new_message=content
             ):
-                if event.is_final_response():
-                    if (
-                        event.content
-                        and event.content.parts
-                        and event.content.parts[0].text
-                    ):
-                        final_response_text = event.content.parts[0].text.strip()
-                        logger.info(f"==> Final Agent Response: {final_response_text}")
-                    else:
-                        logger.warning(
-                            f"==> Final Agent Response: [No text content in final event] : {event}! Session ID: {self.session_id}"
-                        )
-                        return final_response_text
+                logger.info(f"Event type: {type(event)}")
+                logger.info(
+                    f"Event is_final: {event.is_final_response() if callable(getattr(event, 'is_final_response', None)) else 'N/A'}"
+                )
+                logger.info(f"Event content: {event.content}")
+                is_final_fn = getattr(event, "is_final_response", None)
+                is_final_response = is_final_fn() if callable(is_final_fn) else False
+
+                text = _extract_text_from_event(event)
+                if not text:
+                    if is_final_response:
+                        break
+                    continue
+
+                if text.startswith(seen_text):
+                    delta = text[len(seen_text) :]
+                    seen_text = text
+                else:
+                    delta = text
+                    seen_text += text
+
+                if delta:
+                    yield delta
+
+                if is_final_response:
+                    break
+        except Exception as e:
+            logger.error(f"Stream error for session {self.session_id}: {e}")
+            yield "\n[Milo a rencontré une erreur. Réessaie dans un instant.]"
+
+    async def call_agent_async(self, query: str, user_name: str | None = None) -> str:
+        final_response_text = ""
+        try:
+            async for delta in self.stream_agent_text(query, user_name=user_name):
+                final_response_text += delta
         except Exception as e:
             logger.error(
                 f"Error occurred while calling agent: {e}! Session ID: {self.session_id}"
             )
+            return f"Agent error: {e}"
 
+        final_response_text = final_response_text.strip()
+        if not final_response_text:
+            return "No final text response captured."
+
+        logger.info(f"==> Final Agent Response: {final_response_text}")
         return final_response_text

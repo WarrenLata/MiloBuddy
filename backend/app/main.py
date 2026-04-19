@@ -8,11 +8,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.auth import init_firebase
 from app.core.config import settings
 
-from .api import auth_router, chat_router, goals_router, transactions_router
+from .api import (
+    auth_router,
+    budgets_router,
+    chat_router,
+    expenses_router,
+    freedom_score_router,
+    goals_router,
+    transactions_router,
+)
 
 # Initialize vertexai with the configured project (kept static here but can be
 # moved to Settings if you want it configurable via .env)
-vertexai.init(project=settings.gcloud_project_id)
+vertexai.init(project=settings.GOOGLE_CLOUD_PROJECT)
 
 
 @asynccontextmanager
@@ -21,7 +29,13 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Milo Backend", lifespan=lifespan)
+app = FastAPI(
+    title="Milo Backend",
+    lifespan=lifespan,
+    swagger_ui_parameters={
+        "persistAuthorization": True,
+    },
+)
 
 
 app.add_middleware(
@@ -31,6 +45,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# def custom_openapi():
+#     if app.openapi_schema:
+#         return app.openapi_schema
+#     schema = get_openapi(
+#         title="Milo API",
+#         version="1.0.0",
+#         routes=app.routes,
+#     )
+#     schema["components"]["securitySchemes"] = {
+#         "Bearer": {
+#             "type": "http",
+#             "scheme": "bearer",
+#             "bearerFormat": "JWT",
+#         }
+#     }
+#     schema["security"] = [{"Bearer": []}]
+#     app.openapi_schema = schema
+#     return schema
+
+# app.openapi = custom_openapi
 
 
 @app.get("/")
@@ -39,6 +73,9 @@ async def root():
 
 
 app.include_router(chat_router)
+app.include_router(expenses_router)
+app.include_router(budgets_router)
+app.include_router(freedom_score_router)
 app.include_router(transactions_router)
 app.include_router(goals_router)
 app.include_router(auth_router)

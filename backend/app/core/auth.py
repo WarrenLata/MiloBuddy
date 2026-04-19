@@ -19,7 +19,8 @@ def init_firebase() -> None:
     """Initialize the firebase_admin SDK at application startup.
 
     Tries application default credentials (ADC) first, then falls back to a
-    service account JSON path provided via FIREBASE_SERVICE_ACCOUNT.
+    service account JSON path provided via FIREBASE_SERVICE_ACCOUNT (or the
+    legacy FIREBASE_CREDENTIALS).
 
     This function logs warnings instead of raising so the app can still start
     even if Firebase verification isn't configured; requests that require
@@ -36,31 +37,25 @@ def init_firebase() -> None:
             _firebase_initialized = True
             return
 
-        try:
-            firebase_admin.initialize_app()
-            _firebase_initialized = True
-            logging.info(
-                "Initialized Firebase Admin using application default credentials"
-            )
-            return
-        except Exception:
-            cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT")
-            if cred_path and os.path.exists(cred_path):
-                cred = firebase_credentials.Certificate(cred_path)
-                firebase_admin.initialize_app(cred)
-                _firebase_initialized = True
-                logging.info(
-                    "Initialized Firebase Admin using FIREBASE_SERVICE_ACCOUNT file"
-                )
-                return
+        cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT") or os.getenv(
+            "FIREBASE_CREDENTIALS"
+        )
 
-        logging.warning(
-            "Firebase Admin SDK not initialized: set FIREBASE_SERVICE_ACCOUNT or configure ADC"
-        )
-    except Exception:
-        logging.warning(
-            "firebase_admin package not installed. Install with `pip install firebase-admin` to enable token verification"
-        )
+        # 1. Prefer explicit service account file
+        if cred_path and os.path.exists(cred_path):
+            cred = firebase_credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+            _firebase_initialized = True
+            logging.info("Firebase initialized with service account file")
+            return
+
+        # 2. Fallback to ADC
+        firebase_admin.initialize_app()
+        _firebase_initialized = True
+        logging.info("Firebase initialized with ADC")
+
+    except Exception as e:
+        logging.warning(f"Firebase init failed: {e}")
 
 
 async def verify_firebase_token(
@@ -93,7 +88,7 @@ async def verify_firebase_token(
         raise HTTPException(
             status_code=500,
             detail=(
-                "Firebase Admin SDK not initialized. Configure ADC or set FIREBASE_SERVICE_ACCOUNT "
+                "Firebase Admin SDK not initialized. Configure ADC or set FIREBASE_SERVICE_ACCOUNT (or FIREBASE_CREDENTIALS) "
                 "and call init_firebase() at application startup."
             ),
         )
@@ -111,7 +106,15 @@ async def verify_firebase_token(
     stmt = select(User).where(User.firebase_uid == uid).limit(1)
     result = await db.execute(stmt)
     user = result.scalars().first()
-    if not user:
+    email = decoded.get("email")
+    if not user and email:
+        stmt = select(User).where(User.email == email)
+        result = await db.execute(stmt)
+        user = result.scalars().first()
+
+        if user:
+            return str(user.id)
+
         # Create a minimal user record using available token claims.
         email = decoded.get("email") or f"{uid}@unknown"
         name = decoded.get("name") or decoded.get("displayName") or "User"

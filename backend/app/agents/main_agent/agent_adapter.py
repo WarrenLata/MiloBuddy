@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from typing import Dict
 
 from .main_agent import MainAgentRunner
@@ -13,44 +14,29 @@ _locks: Dict[str, asyncio.Lock] = {}
 logger = logging.getLogger(__name__)
 
 
-async def _get_or_create_runner(
-    user_id: str, user_name: str | None = None
-) -> MainAgentRunner:
-    """Return a cached MainAgentRunner for user_id or create one if missing.
-
-    Creation is done inside a thread because MainAgentRunner.__init__ uses
-    `asyncio.run(...)` to create its session synchronously.
-    """
-    # fast path
-    runner = _runners.get(user_id)
-    if runner:
-        return runner
-
-    # ensure a lock exists for this user
+def _get_lock(user_id: str) -> asyncio.Lock:
     lock = _locks.get(user_id)
     if lock is None:
         lock = asyncio.Lock()
         _locks[user_id] = lock
+    return lock
 
-    async with lock:
-        # double-check after acquiring lock
-        runner = _runners.get(user_id)
-        if runner:
-            return runner
 
-        # Use the async factory to create the runner (avoids asyncio.run inside)
-        runner = await MainAgentRunner.create(user_id=user_id, user_name=user_name)
-        _runners[user_id] = runner
-        logger.info(
-            "Created MainAgentRunner for user_id=%s session_id=%s",
-            user_id,
-            (
-                getattr(runner, "session_id", None)
-                if getattr(runner, "session_id", None)
-                else None
-            ),
-        )
+async def _get_or_create_runner_locked(
+    user_id: str, user_name: str | None = None
+) -> MainAgentRunner:
+    runner = _runners.get(user_id)
+    if runner:
         return runner
+
+    runner = await MainAgentRunner.create(user_id=user_id, user_name=user_name)
+    _runners[user_id] = runner
+    logger.info(
+        "Created MainAgentRunner for user_id=%s session_id=%s",
+        user_id,
+        getattr(runner, "session_id", None),
+    )
+    return runner
 
 
 async def handle_message(
@@ -62,16 +48,36 @@ async def handle_message(
     session) for subsequent requests from the same `user_id`.
     """
     try:
-        runner = await _get_or_create_runner(user_id, user_name)
-        reply = await runner.call_agent_async(message, user_name=user_name)
-        return reply
+        lock = _get_lock(user_id)
+        async with lock:
+            runner = await _get_or_create_runner_locked(user_id, user_name)
+            return await runner.call_agent_async(message, user_name=user_name)
     except Exception as e:
         logger.exception(
-            "Error while handling message with MainAgentRunner ! Message: %s, User ID: %s",
+            "Error while handling with MainAgentRunner. message=%s user_id=%s",
             message,
             user_id,
         )
         return f"Agent error: {e}"
+
+
+async def handle_message_stream(
+    message: str, user_id: str = "user", user_name: str | None = None
+) -> AsyncIterator[str]:
+    """Stream a user message to the per-user MainAgentRunner and yield deltas."""
+    lock = _get_lock(user_id)
+    async with lock:
+        runner = await _get_or_create_runner_locked(user_id, user_name)
+        try:
+            async for delta in runner.stream_agent_text(message, user_name=user_name):
+                yield delta
+        except Exception as e:
+            logger.exception(
+                "Error while streaming with MainAgentRunner. message=%s user_id=%s",
+                message,
+                user_id,
+            )
+            yield f"Agent error: {e}"
 
 
 def clear_runner(user_id: str) -> None:
