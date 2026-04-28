@@ -9,11 +9,22 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.main_agent.tools.read_tools import (
+    _get_categories,
+    _get_category_budget,
+    _get_context,
+    _get_recent_expenses,
+)
+from app.agents.main_agent.tools.write_tools import (
+    _create_budget,
+    _create_category,
+    _post_expense,
+    _post_goal,
+)
 from app.core.config import settings
 from app.db.engine import async_session
 from app.db.models import Conversation
 
-from .build_context import build_main_agent_context, onboarding_context
 from .prompt import PROMPT
 
 load_dotenv()
@@ -51,20 +62,17 @@ async def save_assistant_message(
 
 def create_agent(
     user_name: str | None = None,
-    build_context: str = "",
+    tools: list | None = None,
     description: str = "Main chat agent. Discuss with the user and decides which tools to use to answer the user's questions.",
 ) -> Agent:
-    prompt = PROMPT.format(
-        user_name=user_name or "utilisateur",
-        build_context=build_context,
-    )
+    prompt = PROMPT.format(user_name=user_name or "utilisateur")
 
     return Agent(
         model=settings.adk_model,
         name="root_agent",
         description=description,
         instruction=prompt,
-        tools=[],
+        tools=tools or [],
         generate_content_config=types.GenerateContentConfig(
             temperature=0.7,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
@@ -109,10 +117,10 @@ class MainAgentRunner(Runner):
         self,
         user_id: str = "user",
         user_name: str | None = None,
-        build_context: str = "",
     ):
         # Build the per-user agent instruction but don't perform async work here
-        self.agent = create_agent(user_name, build_context=build_context)
+        self.user = user_id
+        self.agent = create_agent(user_name, tools=self._build_tools())
         # Initialize base Runner with an in-memory session service
         super().__init__(
             agent=self.agent,
@@ -120,7 +128,6 @@ class MainAgentRunner(Runner):
             app_name="MAIN_CHAT",
         )
 
-        self.user = user_id
         # session will be set during the async factory
         self.session = None
         self.session_id = ""
@@ -132,6 +139,118 @@ class MainAgentRunner(Runner):
             app_name="MAIN_CHAT",
         )
 
+    # Dans __init__ — après self.user = user_id
+    def _build_tools(self) -> list:
+        user_id = self.user
+
+        async def get_context() -> dict:
+            """Retourne la situation financière complète de l'utilisateur.
+            Appelle ce tool au début de chaque conversation et quand tu as
+            besoin de données fraîches : Freedom Score, catégories disponibles,
+            budgets du mois, objectifs actifs."""
+            async with async_session() as db:
+                return await _get_context(user_id, db)
+
+        async def get_category_budget(category_name: str) -> dict:
+            """Retourne le budget et les dépenses pour une catégorie spécifique.
+            Appelle ce tool quand l'utilisateur demande combien il lui reste
+            dans une catégorie précise.
+
+            Args:
+                category_name: Nom exact de la catégorie (ex: Alimentation, Transport)
+            """
+            async with async_session() as db:
+                return await _get_category_budget(user_id, db, category_name)
+
+        async def get_recent_expenses(limit: int = 5) -> dict:
+            """Retourne les dernières dépenses de l'utilisateur.
+            Appelle ce tool quand l'utilisateur veut voir son historique récent.
+
+            Args:
+                limit: Nombre de dépenses à retourner (défaut: 5)
+            """
+            async with async_session() as db:
+                return await _get_recent_expenses(user_id, db, limit)
+
+        async def post_expense(
+            category_name: str, amount_cents: int, description: str
+        ) -> dict:
+            """Enregistre une dépense de l'utilisateur en base de données.
+            Appelle ce tool dès que l'utilisateur mentionne qu'il a dépensé
+            quelque chose. Choisis la catégorie la plus adaptée sans demander
+            à l'utilisateur.
+
+            Args:
+                category_name: Catégorie depuis get_context() — la plus adaptée
+                amount_cents: Montant en centimes. 45€ = 4500. 12,50€ = 1250.
+                description: Ce que l'utilisateur a mentionné
+            """
+            async with async_session() as db:
+                return await _post_expense(
+                    user_id, db, category_name, amount_cents, description
+                )
+
+        async def create_budget(category_name: str, limit_amount_cents: int) -> dict:
+            """Crée ou met à jour le budget mensuel d'une catégorie.
+            Appelle ce tool quand l'utilisateur veut fixer ou modifier
+            un budget pour une catégorie.
+
+            Args:
+                category_name: Catégorie depuis get_context()
+                limit_amount_cents: Limite mensuelle en centimes. 500€ = 50000.
+            """
+            async with async_session() as db:
+                return await _create_budget(
+                    user_id, db, category_name, limit_amount_cents
+                )
+
+        async def create_category(name: str, icon: str | None = None) -> dict:
+            """Crée une catégorie personnalisée pour l'utilisateur.
+            Appelle ce tool uniquement si aucune catégorie existante
+            ne correspond à la dépense de l'utilisateur.
+            Demande toujours confirmation avant de créer.
+
+            Args:
+                name: Nom de la nouvelle catégorie (max 50 caractères)
+                icon: Emoji représentatif optionnel (ex: 🎬, 🐶, 🎮)
+            """
+            async with async_session() as db:
+                return await _create_category(user_id, db, name, icon)
+
+        async def get_categories() -> dict:
+            """Retourne toutes les catégories disponibles.
+            Appelle ce tool quand l'utilisateur demande ses catégories
+            ou avant de créer une nouvelle catégorie."""
+            async with async_session() as db:
+                return await _get_categories(user_id, db)
+
+        async def post_goal(
+            name: str, target_amount_cents: int, deadline: str | None = None
+        ) -> dict:
+            """Crée un objectif d'épargne pour l'utilisateur.
+            Appelle ce tool quand l'utilisateur mentionne un projet
+            ou un objectif financier.
+
+            Args:
+                name: Nom de l'objectif (ex: Vacances, Voiture, Téléphone)
+                target_amount_cents: Montant cible en centimes. 1000€ = 100000.
+                deadline: Date limite optionnelle format YYYY-MM-DD
+            """
+            async with async_session() as db:
+                return await _post_goal(
+                    user_id, db, name, target_amount_cents, deadline
+                )
+
+        return [
+            get_context,
+            get_category_budget,
+            get_recent_expenses,
+            post_expense,
+            create_category,
+            create_budget,
+            post_goal,
+        ]
+
     @classmethod
     async def create(cls, user_id: str = "user", user_name: str | None = None):
         """Async factory that constructs the runner and creates a session.
@@ -140,23 +259,8 @@ class MainAgentRunner(Runner):
         use from an existing event loop.
         """
         session_id = f"main_chat_{user_id}_{uuid.uuid4()}"
-        build_context = onboarding_context()
-        if async_session is not None:
-            try:
-                async with async_session() as db:
-                    build_context = await build_main_agent_context(user_id, db=db)
-            except Exception:
-                logger.exception(
-                    "Failed to build main agent context; falling back to onboarding context. user_id=%s",
-                    user_id,
-                )
-                build_context = onboarding_context()
 
-        instance = cls(
-            user_id=user_id,
-            user_name=user_name,
-            build_context=build_context,
-        )
+        instance = cls(user_id=user_id, user_name=user_name)
 
         # create_session is async so await it here
         instance.session = await instance.session_service.create_session(

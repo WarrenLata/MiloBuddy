@@ -33,7 +33,7 @@ async def post_message(req: ChatRequest, user_id: str = Depends(verify_firebase_
             first_token_logged = False
             try:
                 async for delta in handle_message_stream(
-                    req.message, req.user_id, user_name=req.user_name
+                    req.message, user_id, user_name=req.user_name
                 ):
                     if not delta:
                         continue
@@ -50,19 +50,19 @@ async def post_message(req: ChatRequest, user_id: str = Depends(verify_firebase_
                         first_token_logged = True
                         logger.info(
                             "Chat stream first token user_id=%s in %.1fms",
-                            req.user_id,
+                            user_id,
                             (time.perf_counter() - start) * 1000,
                         )
 
                     payload = json.dumps({"delta": delta}, ensure_ascii=False)
                     yield f"data: {payload}\n\n"
             except asyncio.CancelledError:
-                logger.info("Chat stream client disconnected user_id=%s", req.user_id)
+                logger.info("Chat stream client disconnected user_id=%s", user_id)
                 return
             except Exception as e:
                 logger.exception(
                     "Unhandled error in chat stream user_id=%s",
-                    req.user_id,
+                    user_id,
                 )
                 payload = json.dumps({"error": str(e)}, ensure_ascii=False)
                 yield f"event: error\ndata: {payload}\n\n"
@@ -76,7 +76,7 @@ async def post_message(req: ChatRequest, user_id: str = Depends(verify_firebase_
         )
 
     try:
-        reply = await handle_message(req.message, req.user_id, user_name=req.user_name)
+        reply = await handle_message(req.message, user_id, user_name=req.user_name)
         return {"reply": reply}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

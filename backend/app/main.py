@@ -5,6 +5,7 @@ import vertexai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import categories, goals, recurring_expenses
 from app.core.auth import init_firebase
 from app.core.config import settings
 
@@ -14,7 +15,6 @@ from .api import (
     chat_router,
     expenses_router,
     freedom_score_router,
-    goals_router,
     transactions_router,
 )
 
@@ -77,7 +77,9 @@ app.include_router(expenses_router)
 app.include_router(budgets_router)
 app.include_router(freedom_score_router)
 app.include_router(transactions_router)
-app.include_router(goals_router)
+app.include_router(categories.router)
+app.include_router(goals.router)
+app.include_router(recurring_expenses.router)
 app.include_router(auth_router)
 
 
